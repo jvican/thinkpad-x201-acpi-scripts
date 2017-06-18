@@ -1,46 +1,46 @@
 #!/bin/bash
 logger "ACPI [lid]: START"
 
-test -f /usr/share/acpi-support/state-funcs || exit 0
+getXuser() {
+    Xtty=$(</sys/class/tty/tty0/active)
+    Xpid=$(pgrep -t $Xtty -f /usr/bin/X)
 
-logger "ACPI [lid] state-func passed"
+    Xenv+=("$(egrep -aoz 'USER=.+' /proc/$Xpid/environ)")
+    Xenv+=("$(egrep -aoz 'XAUTHORITY=.+' /proc/$Xpid/environ)")
+    Xenv+=("$(egrep -aoz ':[0-9](.[0-9])?' /proc/$Xpid/cmdline)")
 
-. /usr/share/acpi-support/power-funcs
-. /usr/share/acpi-support/policy-funcs
-. /etc/default/acpi-support
+    Xenv=(${Xenv[@]#*=})
 
-logger "ACPI [lid] support funcs loaded"
+    (( ${#Xenv[@]} )) && {
+        export XUSER=${Xenv[0]} XAUTHORITY=${Xenv[1]} DISPLAY=${Xenv[2]}
+        su -c "$*" "$XUSER"
+    }
+}
 
-if [ `CheckPolicy` = 0 ]
-then
-  logger "ACPI [lid] CheckPolicy failed"
-  exit
-fi
+# run slock only once
+run_slock_once() {
+  [[ `pidof /usr/bin/slock` == "" ]] && getXuser slock
+}
 
-# get the user running xscreensaver
-xs=$(ps up $(pidof xscreensaver) | awk '/xscreensaver/ {print $1}')
-logger "ACPI [lid] xscreensaver user $xs"
-# If $? = 0 then the lid is closing otherwise it's being opened
 grep -q closed /proc/acpi/button/lid/*/state
 if [ $? = 0 ]
 then
+  # the lid is closing
   logger "ACPI [lid]: Lid closed"
-	Dis=`acpi | cut -f3 -d " "`
+  ONLINE="$(cat /sys/devices/platform/smapi/BAT0/state)"
 
-	# If we are discharging then sleep otherwise blank the screen
-  if [ "$Dis" = "Discharging," ]
-  then
+  # If we are discharging then sleep otherwise blank the screen
+  if [[ $ONLINE == "discharging" ]]; then
     logger "ACPI [lid]: Discharging... Entering sleep"
-    su $xs -c "xscreensaver-command -lock"
+    run_slock_once
     sleep 2
     echo -n mem > /sys/power/state
   else
     logger "ACPI user: $user"
     logger "ACPI [lid]: Power connected blanking screen"
-    su $xs -c "xscreensaver-command -lock"
+    run_slock_once
   fi
 else
+  # the lid is being opened
   logger "ACPI [lid]: Lid opened"
-  su $xs -c "xset dpms force on"
-  su $xs -c "xscreensaver-command -deactivate"
 fi
